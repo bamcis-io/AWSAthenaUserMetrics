@@ -1,0 +1,793 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    "Transform"                : "AWS::Serverless-2016-10-31",
+    "Description"              : "Generates Athena query execution metrics and stores them in S3 to query with Athena",
+    
+	
+	"Parameters"               : {
+        "LogRetentionInDays" : {
+            "Type" : "Number",
+            "Description" : "The number of days to retain the CloudWatch Logs for the function. If this is set to 0, it will be infinite retention.",
+            "MinValue"    : 0,
+            "Default"     : 7
+        },
+		"GlueDatabaseName" : {
+			"Type" : "String",
+			"Description" : "The name of the AWS Glue database.",
+			"Default" : "athenametrics"
+		},
+		"CloudTrailBucketName" : {
+			"Type" : "String",
+			"Description" : "The name of the bucket containing CloudTrail logs.",
+			"MinLength"   : 3,
+            "MaxLength"   : 63,
+            "AllowedPattern" : "^[a-z](?:(?:\\.(?!\\.))|-|[a-zA-Z0-9]){1,61}[a-z]$",
+            "ConstraintDescription" : "Member must satisfy regular expression pattern: ^[a-z](?:(?:\\.(?!\\.))|-|[a-zA-Z0-9]){1,61}[a-z]$"
+		},
+		"CloudTrailPrefix" : {
+			"Type" : "String",
+			"Description" : "The prefix folder path to the actual CloudTrail logs. If this is blank, the default will be used, /AWSLogs/<AccountId>/CloudTrail",
+			"Default" : ""
+		},
+		"AthenaQueryDataBucketName" : {
+			"Type" : "String",
+			"Description" : "The name of the bucket that will be created to store the athena query execution data in CSV format.",
+			"MinLength"   : 3,
+            "MaxLength"   : 63,
+            "AllowedPattern" : "^[a-z](?:(?:\\.(?!\\.))|-|[a-zA-Z0-9]){1,61}[a-z]$",
+            "ConstraintDescription" : "Member must satisfy regular expression pattern: ^[a-z](?:(?:\\.(?!\\.))|-|[a-zA-Z0-9]){1,61}[a-z]$"
+		}
+
+    },
+
+
+    "Conditions"               : {
+        "InfiniteRetention" : {
+            "Fn::Equals" : [
+                {
+                    "Ref" : "LogRetentionInDays"
+                },
+                0
+            ]
+        },
+		"UseDefaultCTPrefix" : {
+			"Fn::Equals" : [
+				{
+					"Ref" : "CloudTrailPrefix"
+				},
+				""
+			]
+		}
+    },
+
+	"Mappings" : {
+		"Internal" : {
+			"Marker" : {
+				"Key" : "marker.txt"
+			},
+			"Retry" : {
+				"Key" : "retry.txt"
+			},
+			"FunctionNames" : {
+				"Main" : "AWSAthenaMetricProvider",
+				"Retry" : "AWSAthenaRetryMetricProvider"
+			}
+		}
+	},
+
+    "Resources"                : {
+		"AthenaQueryExecutionDataBucket" : {
+			"Type" : "AWS::S3::Bucket",
+			"Properties" : {
+				"BucketName" : {
+					"Ref" : "AthenaQueryDataBucketName"
+				}
+			}
+		},	
+		"AthenaQueryExecutionDataBucketPolicy" : {
+            "Type" : "AWS::S3::BucketPolicy",
+            "Properties" : {
+                "Bucket" : {
+                    "Ref" : "AthenaQueryExecutionDataBucket"
+                },
+                "PolicyDocument" : {
+                    "Version" : "2008-10-17",
+                    "Id"      : "1",
+                    "Statement" : [
+                        {
+                            "Sid" : "1",
+                            "Effect" : "Deny",
+                            "Principal" : "*",
+                            "Action"    : [
+                                "s3:PutObject",
+                                "s3:DeleteObject"
+                            ],
+                            "Resource"  : {
+                                "Fn::Sub" : "arn:aws:s3:::${AthenaQueryExecutionDataBucket}/*"
+                            },
+                            "Condition" : {
+                                "StringNotLike" : {
+                                    "aws:UserId" : [
+                                        {
+                                            "Fn::Sub" : "${LambdaAthenaMetricsRole.RoleId}:*"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+
+
+        "LambdaAthenaMetricsRole" : {
+            "Type" : "AWS::IAM::Role",
+            "Properties" : {
+                "AssumeRolePolicyDocument" : {
+                    "Version" : "2012-10-17",
+                    "Statement" : [
+                        {
+                            "Effect" : "Allow",
+                            "Principal" : {
+                                "Service" : [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action"    : [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "LambdaAthenaPolicy"      : {
+            "Type" : "AWS::IAM::Policy",
+            "Properties" : {
+                "PolicyName" : "LambdaAthenaPolicy",
+                "PolicyDocument" : {
+                    "Version" : "2012-10-17",
+                    "Statement" : [
+                        {
+                            "Effect" : "Allow",
+                            "Action" : [
+                                "athena:GetQueryExecution",
+								"athena:BatchGetQueryExecution",
+                                "athena:ListQueryExecutions"
+                            ],
+                            "Resource" : [
+                                "*"
+                            ]
+                        }
+                    ]
+                },
+                "Roles"          : [
+                    {
+                        "Ref" : "LambdaAthenaMetricsRole"
+                    }
+                ]
+            }
+        },
+        "LambdaCWLPolicy"         : {
+            "Type" : "AWS::IAM::Policy",
+            "Properties" : {
+                "PolicyName" : "LambdaCWLPolicy",
+                "PolicyDocument" : {
+                    "Version" : "2012-10-17",
+                    "Statement" : [
+                        {
+                            "Effect" : "Allow",
+                            "Action" : [
+                                "logs:CreateLogStream",
+                                "logs:CreateLogGroup",
+                                "logs:DescribeLogStreams",
+                                "logs:PutLogEvents",
+                                "logs:DescribeLogGroups"
+                            ],
+                            "Resource" : {
+                                "Fn::Join" : [
+                                    "",
+                                    [
+                                        "arn:aws:logs:*:",
+                                        {
+                                            "Ref" : "AWS::AccountId"
+                                        },
+                                        ":*"
+                                    ]
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "Roles"          : [
+                    {
+                        "Ref" : "LambdaAthenaMetricsRole"
+                    }
+                ]
+            }
+        },
+		"LambdaS3Policy"      : {
+            "Type" : "AWS::IAM::Policy",
+            "Properties" : {
+                "PolicyName" : "LambdaS3Policy",
+                "PolicyDocument" : {
+                    "Version" : "2012-10-17",
+                    "Statement" : [
+                        {
+                            "Effect" : "Allow",
+                            "Action" : [
+                                "s3:PutObject"
+                            ],
+                            "Resource" : [
+                                {
+									"Fn::Sub" : "arn:aws:s3:::${AthenaQueryExecutionDataBucket}/*"
+								}
+                            ]
+                        },
+						{
+                            "Effect" : "Allow",
+                            "Action" : [
+                                "s3:GetObject"
+                            ],
+                            "Resource" : [
+                                {
+									"Fn::Sub" : [
+										"arn:aws:s3:::${AthenaQueryExecutionDataBucket}/${Key}",
+										{
+											"Key" : {
+												"Fn::FindInMap" : [
+													"Internal",
+													"Marker",
+													"Key"
+												]
+											}
+										}
+									]
+								},
+								{
+									"Fn::Sub" : [
+										"arn:aws:s3:::${AthenaQueryExecutionDataBucket}/${Key}",
+										{
+											"Key" : {
+												"Fn::FindInMap" : [
+													"Internal",
+													"Retry",
+													"Key"
+												]
+											}
+										}
+									]
+								}
+                            ]
+                        }
+                    ]
+                },
+                "Roles"          : [
+                    {
+                        "Ref" : "LambdaAthenaMetricsRole"
+                    }
+                ]
+            }
+        },
+
+
+        "AWSAthenaMetricProvider" : {
+            "Type" : "AWS::Serverless::Function",
+            "Properties" : {
+                "Handler" : "AWSAthenaUserMetrics::BAMCIS.LambdaFunctions.AWSAthenaUserMetrics.Entrypoint::ExecAsync",
+                "FunctionName" : {
+					"Fn::FindInMap" : [
+						"Internal",
+						"FunctionNames",
+						"Main"
+					]
+				},
+				"Description"  : "Retrieves query executions from the Athena API and writes them to S3 in CSV.",
+                "Runtime"      : "dotnetcore2.1",
+                "CodeUri"      : "",
+                "MemorySize"   : 256,
+                "Timeout"      : 900,
+                "Role"         : {
+                    "Fn::GetAtt" : [
+                        "LambdaAthenaMetricsRole",
+                        "Arn"
+                    ]
+                },
+				"Environment" : {
+					"Variables" : {
+						"MARKER_BUCKET" : {
+							"Ref" : "AthenaQueryExecutionDataBucket"
+						},
+						"MARKER_KEY" : {
+							"Fn::FindInMap" : [
+								"Internal",
+								"Marker",
+								"Key"
+							]
+						},
+						"RESULT_BUCKET" : {
+							"Ref" : "AthenaQueryExecutionDataBucket"
+						},
+						"RETRY_BUCKET" : {
+							"Ref" : "AthenaQueryExecutionDataBucket"
+						},
+						"RETRY_KEY" : {
+							"Fn::FindInMap" : [
+								"Internal",
+								"Retry",
+								"Key"
+							]
+						}
+					}
+				},
+                "Events"       : {
+                    "ScheduledEvent" : {
+                        "Type" : "Schedule",
+                        "Properties" : {
+                            "Schedule" : "cron(5 * * * ? *)"							 
+                        }
+                    }
+                }
+            }
+        },
+
+		"AWSAthenaMetricRetryProvider" : {
+            "Type" : "AWS::Serverless::Function",
+            "Properties" : {
+                "Handler" : "AWSAthenaUserMetrics::BAMCIS.LambdaFunctions.AWSAthenaUserMetrics.Entrypoint::RetryAsync",
+                "FunctionName" : {
+					"Fn::FindInMap" : [
+						"Internal",
+						"FunctionNames",
+						"Retry"
+					]
+				},
+				"Description"  : "Reads a flat file in S3 with query execution ids that weren't finished when the main function ran and retries retrieving details.",
+                "Runtime"      : "dotnetcore2.1",
+                "CodeUri"      : "",
+                "MemorySize"   : 256,
+                "Timeout"      : 900,
+                "Role"         : {
+                    "Fn::GetAtt" : [
+                        "LambdaAthenaMetricsRole",
+                        "Arn"
+                    ]
+                },
+				"Environment" : {
+					"Variables" : {
+						"MARKER_BUCKET" : {
+							"Ref" : "AthenaQueryExecutionDataBucket"
+						},
+						"MARKER_KEY" : {
+							"Fn::FindInMap" : [
+								"Internal",
+								"Marker",
+								"Key"
+							]
+						},
+						"RESULT_BUCKET" : {
+							"Ref" : "AthenaQueryExecutionDataBucket"
+						},
+						"RETRY_BUCKET" : {
+							"Ref" : "AthenaQueryExecutionDataBucket"
+						},
+						"RETRY_KEY" : {
+							"Fn::FindInMap" : [
+								"Internal",
+								"Retry",
+								"Key"
+							]
+						}
+					}
+				},
+                "Events"       : {
+                    "ScheduledEvent" : {
+                        "Type" : "Schedule",
+                        "Properties" : {
+                            "Schedule" : "cron(5 * * * ? *)"							 
+                        }
+                    }
+                }
+            }
+        },
+
+
+		"GlueDatabase" : {
+			"Type" : "AWS::Glue::Database",
+			"Properties" : {
+				"DatabaseInput" : {
+					"Description" : "Db of athena query executions and cloudtrail logs",
+					"Name" : {
+						"Ref" : "GlueDatabaseName"
+					}
+				},
+				"CatalogId" : {
+					"Ref" : "AWS::AccountId"
+				}
+			}
+		},
+		"QueryExecutionTable" : {
+			"Type" : "AWS::Glue::Table",
+			"Properties" : {
+				"DatabaseName" : {
+					"Ref" : "GlueDatabase"
+				},
+				"TableInput" : {
+					"Description" : "Athena Query Executions",
+					"Name" : "athena_query_executions",
+					"TableType" : "EXTERNAL_TABLE",
+					"StorageDescriptor" : {
+						"Compressed" : true,
+						"InputFormat" : "org.apache.hadoop.mapred.TextInputFormat",
+						"OutputFormat" : "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+						"SerdeInfo" : {
+							"Name" : "LazySimpleSerDe",
+							"SerializationLibrary" : "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe",
+							"Parameters"           : {
+                                "field.delim" : ",",
+                                "serialization.format" : "."
+                            }
+						},
+						"Location" : {
+							"Fn::Sub" : "s3://${AthenaQueryExecutionDataBucket}/data"
+						},
+						"Columns" : [
+							{
+								"Name" : "QueryExecutionId",
+								"Type" : "string"
+							},
+							{
+								"Name" : "Database",
+								"Type" : "string"
+							},
+							{
+								"Name" : "StatementType",
+								"Type" : "string"
+							},
+							{
+								"Name" : "DataScannedInBytes",
+								"Type" : "bigint"
+							},
+							{
+								"Name" : "EngineExecutionTimeInMillis",
+								"Type" : "bigint"
+							},
+							{
+								"Name" : "SubmissionDate",
+								"Type" : "timestamp"
+							},
+							{
+								"Name" : "CompletionDate",
+								"Type" : "timestamp"
+							},
+							{
+								"Name" : "Status",
+								"Type" : "string"
+							},
+							{
+								"Name" : "OutputLocation",
+								"Type" : "string"
+							},
+							{
+								"Name" : "EncryptionConfiguration",
+								"Type" : "string"
+							},
+							{
+								"Name" : "KmsKey",
+								"Type" : "string"
+							},
+							{
+								"Name" : "Query",
+								"Type" : "string"
+							}
+						]
+					},
+					"Parameters" : {
+						"classification" : "csv",
+						"skip.header.line.count" : "1",
+						"columnsOrdered" : "true",
+						"EXTERNAL" : "TRUE",
+						"typeOfData" : "file"
+					},
+					"PartitionKeys" : [
+						{
+							 "Name" : "BillingPeriod",
+							 "Type" : "date"
+						}
+					]
+				},
+				"CatalogId" : {
+					"Ref" : "AWS::AccountId"
+				}				 
+			}
+		},
+		"CloudTrailLogsTable" : {
+			"Type" : "AWS::Glue::Table",
+			"Properties" : {
+				"DatabaseName" : {
+					"Ref" : "GlueDatabase"
+				},
+				"TableInput" : {
+					"Description" : "CloudTrail Logs",
+					"Name" : "cloudtrail_logs",	
+					"TableType" : "EXTERNAL_TABLE",
+					"StorageDescriptor" : {
+						"InputFormat": "com.amazon.emr.cloudtrail.CloudTrailInputFormat",
+						"OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+						"Compressed": "true",
+						"SerdeInfo" : {
+							"Name" : "CloudTrail SerDe",
+							"SerializationLibrary" : "com.amazon.emr.hive.serde.CloudTrailSerde"
+						},
+						"Parameters" : {
+							"classification" : "cloudtrail" 
+						},
+						"Location" : {
+							"Fn::Sub" : [
+								"s3://${CloudTrailBucketName}${Prefix}",
+								{
+									"Prefix" : {
+										"Fn::If" : [
+											"UseDefaultCTPrefix",
+											{
+												"Fn::Sub" : "/AWSLogs/${AWS::AccountId}/CloudTrail"
+											},
+											{
+												"Ref" : "CloudTrailPrefix"
+											}
+										]
+									}
+								}
+							]
+						},
+						"Columns" : [
+							{
+								"Name": "eventversion",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "useridentity",
+								"Type": "struct<type:string,principalid:string,arn:string,accountid:string,invokedby:string,accesskeyid:string,username:string,sessioncontext:struct<attributes:struct<mfaauthenticated:string,creationdate:string>,sessionissuer:struct<type:string,principalid:string,arn:string,accountid:string,username:string>>>",
+								"Comment": ""
+							},
+							{
+								"Name": "eventtime",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "eventsource",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "eventname",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "awsregion",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "sourceipaddress",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "useragent",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "errorcode",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "errormessage",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "requestparameters",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "responseelements",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "additionaleventdata",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "requestid",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "eventid",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "resources",
+								"Type": "array<struct<arn:string,accountid:string,type:string>>",
+								"Comment": ""
+							},
+							{
+								"Name": "eventtype",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "apiversion",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "readonly",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "recipientaccountid",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "serviceeventdetails",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "sharedeventid",
+								"Type": "string",
+								"Comment": ""
+							},
+							{
+								"Name": "vpcendpointid",
+								"Type": "string",
+								"Comment": ""
+							}
+						]
+					},
+					"Parameters" : {
+						"classification" : "cloudtrail"
+					}
+				},
+				"CatalogId" : {
+					"Ref" : "AWS::AccountId"
+				}
+			}
+		},
+
+		"AthenaCloudTrailJoinQuery" : {
+			"Type" : "AWS::Athena::NamedQuery",
+			"Properties" : {
+				"Database" : {
+					"Ref" : "GlueDatabase"
+				},
+				"Description" : "Joins user principal to query data",
+				"Name" : "AthenaCloudTrailJoin",
+				"QueryString" : {
+					"Fn::Join" : [
+						"\n",
+						[
+							"-- Update the date for the billing period in the WHERE clause",
+							"-- or provide a different filter to target the range of time to query",
+							"",
+							"SELECT c.useridentity.arn AS arn,",
+							"c.useridentity.accesskeyid as accesskeyid,",
+							"REPLACE(CAST(json_extract(c.responseelements, '$.queryExecutionId') as varchar), '\"') AS queryexecutionid,",
+							"a.Database,",
+							"a.StatementType,",
+							"a.DataScannedInBytes,",
+							"IF (a.StatementType = 'DDL' OR a.StatementType = 'UTILITY', 0, IF( (CAST(a.DataScannedInBytes as DOUBLE) / ( 1024 * 1024 )) < 10, 10, (CAST(a.DataScannedInBytes as DOUBLE) / ( 1024 * 1024 )) )) as datachargedinmebibytes,",
+							"IF (a.StatementType = 'DDL' OR a.StatementType = 'UTILITY', 0, IF( (CAST(a.DataScannedInBytes as DOUBLE) / ( 1024 * 1024 )) < 10, 10, (CAST(a.DataScannedInBytes as DOUBLE) / ( 1024 * 1024 )) )) * 0.000004768 AS cost,",
+							"a.EngineExecutionTimeInMillis,",
+							"a.SubmissionDate,",
+							"a.CompletionDate,",
+							"a.Status",
+							{
+								"Fn::Sub" : "FROM \"${GlueDatabase}\".\"${QueryExecutionTable}\" a"
+							},
+							{
+								"Fn::Sub" : "JOIN \"${GlueDatabase}\".\"${CloudTrailLogsTable}\" c"
+							},
+							"ON cast(json_extract(c.responseelements, '$.queryExecutionId') as varchar) = a.QueryExecutionId",
+							"WHERE c.eventsource = 'athena.amazonaws.com'",
+							"AND c.eventname = 'StartQueryExecution'",
+							"AND a.BillingPeriod = cast('2018-10-01' as date)"
+						]
+					]
+				}
+			}
+		},
+
+		"AthenaAddPartitionsQuery" : {
+			"Type" : "AWS::Athena::NamedQuery",
+			"Properties" : {
+				"Database" : {
+					"Ref" : "GlueDatabase"
+				},
+				"Description" : "Loads partitions into the query execution table",
+				"Name" : "AthenaQueryExecutions-LoadPartitions",
+				"QueryString" : {
+					"Fn::Sub" : "MSCK REPAIR TABLE `${GlueDatabase}`.`${QueryExecutionTable}`"
+				}
+			}
+		},
+
+        "MetricProviderCloudWatchLogGroup"      : {
+            "Type" : "AWS::Logs::LogGroup",
+            "Properties" : {
+                "LogGroupName" : {
+					"Fn::Sub" : [
+						"/aws/lambda/${Name}",
+						{
+							"Name" : { 
+								"Fn::FindInMap" : [
+									"Internal",
+									"FunctionNames",
+									"Main"
+								]
+							}
+						}
+					]
+				},
+                "RetentionInDays" : {
+                    "Fn::If" : [
+                        "InfiniteRetention",
+                        {
+                            "Ref" : "AWS::NoValue"
+                        },
+                        {
+                            "Ref" : "LogRetentionInDays"
+                        }
+                    ]
+                }
+            }
+        },
+		"MetricRetryProviderCloudWatchLogGroup"      : {
+            "Type" : "AWS::Logs::LogGroup",
+            "Properties" : {
+                "LogGroupName" : {
+					"Fn::Sub" : [
+						"/aws/lambda/${Name}",
+						{
+							"Name" : { 
+								"Fn::FindInMap" : [
+									"Internal",
+									"FunctionNames",
+									"Retry"
+								]
+							}
+						}
+					]
+				},
+                "RetentionInDays" : {
+                    "Fn::If" : [
+                        "InfiniteRetention",
+                        {
+                            "Ref" : "AWS::NoValue"
+                        },
+                        {
+                            "Ref" : "LogRetentionInDays"
+                        }
+                    ]
+                }
+            }
+        }
+    },
+
+    "Outputs"                  : {
+    }
+}
