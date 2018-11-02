@@ -7,6 +7,12 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AWSAthenaUserMetrics", "AWS
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AWSAthenaUserMetrics.Tests", "AWSAthenaUserMetrics.Tests\AWSAthenaUserMetrics.Tests.csproj", "{DB9F29B4-A004-4804-BC2D-8D60AA78CD82}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{45822A91-AFF8-448A-B762-04AA9DB10046}"
+	ProjectSection(SolutionItems) = preProject
+		LICENSE = LICENSE
+		README.md = README.md
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU

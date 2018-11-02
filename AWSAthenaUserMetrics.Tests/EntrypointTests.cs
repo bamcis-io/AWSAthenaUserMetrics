@@ -28,15 +28,7 @@ namespace AWSAthenaUserMetrics.Tests
         private static readonly string RETRY_BUCKET = $"{Environment.UserName}-athena-data";
         private static readonly string RETRY_KEY = "retry.txt";
 
-        public EntrypointTests()
-        {
-        }
-
-        [Fact]
-        public async Task TestExec()
-        {
-            // ARRANGE
-            string Json = @"
+        private static readonly string CLOUDWATCH_SCHEDULED_EVENT = @"
 {
 ""version"":""0"",
 ""id"":""125e7841-c049-462d-86c2-4efa5f64e293"",""detail-type"":""Scheduled Event"",""source"":""aws.events"",
@@ -47,10 +39,19 @@ namespace AWSAthenaUserMetrics.Tests
 ""arn:aws:events:us-east-1:415720405880:rule/BackupTest-GetGetBackups-X2YM3334N4JN""
 ],
 ""detail"":{}
-}";
-            Json = Json.Trim().Replace("\r", "").Replace("\n", "").Replace("\t", "");
+}".Trim().Replace("\r", "").Replace("\n", "").Replace("\t", "");
 
-            CloudWatchScheduledEvent Event = JsonConvert.DeserializeObject<CloudWatchScheduledEvent>(Json);
+        private static readonly CloudWatchScheduledEvent Event = JsonConvert.DeserializeObject<CloudWatchScheduledEvent>(CLOUDWATCH_SCHEDULED_EVENT);
+
+
+        public EntrypointTests()
+        {
+        }
+
+        [Fact]
+        public async Task TestExec()
+        {
+            // ARRANGE
 
             Entrypoint Entry = new Entrypoint();
 
@@ -81,21 +82,6 @@ namespace AWSAthenaUserMetrics.Tests
         public async Task TestRetry()
         {
             // ARRANGE
-            string Json = @"
-{
-""version"":""0"",
-""id"":""125e7841-c049-462d-86c2-4efa5f64e293"",""detail-type"":""Scheduled Event"",""source"":""aws.events"",
-""account"":""415720405880"",
-""time"":""2016-12-16T19:55:42Z"",
-""region"":""us-east-1"",
-""resources"":[
-""arn:aws:events:us-east-1:415720405880:rule/BackupTest-GetGetBackups-X2YM3334N4JN""
-],
-""detail"":{}
-}";
-            Json = Json.Trim().Replace("\r", "").Replace("\n", "").Replace("\t", "");
-
-            CloudWatchScheduledEvent Event = JsonConvert.DeserializeObject<CloudWatchScheduledEvent>(Json);
 
             Entrypoint Entry = new Entrypoint();
 
@@ -123,34 +109,5 @@ namespace AWSAthenaUserMetrics.Tests
 
             // ASSERT
         }
-
-        [Fact]
-        public void Test()
-        {
-            AthenaQueryMetric2 Test = new AthenaQueryMetric2()
-            {
-                QueryExecutionId = "1",
-                Database = "test",
-                CompletionDate = DateTime.Now
-            };
-
-            Schema PSchema = SchemaReflector.Reflect<AthenaQueryMetric2>();
-
-            using (MemoryStream MStreamOut = new MemoryStream())
-            {
-                ParquetConvert.Serialize<AthenaQueryMetric2>(new AthenaQueryMetric2[] { Test }, MStreamOut, PSchema);
-            }
-           
-        }
     }
-
-    public class AthenaQueryMetric2
-    {
-        public string QueryExecutionId { get; set; }
-
-        public string Database { get; set; }
-
-        public DateTime CompletionDate { get; set; }
-    }
-
 }

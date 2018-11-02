@@ -385,7 +385,7 @@
                     "ScheduledEvent" : {
                         "Type" : "Schedule",
                         "Properties" : {
-                            "Schedule" : "cron(5 * * * ? *)"							 
+                            "Schedule" : "cron(30 * * * ? *)"							 
                         }
                     }
                 }
