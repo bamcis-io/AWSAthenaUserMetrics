@@ -36,8 +36,19 @@
             "MaxLength"   : 63,
             "AllowedPattern" : "^[a-z](?:(?:\\.(?!\\.))|-|[a-zA-Z0-9]){1,61}[a-z]$",
             "ConstraintDescription" : "Member must satisfy regular expression pattern: ^[a-z](?:(?:\\.(?!\\.))|-|[a-zA-Z0-9]){1,61}[a-z]$"
+		},
+		"OutputFormat" : {
+			"Description" : "The output format for the athena query execution data.",
+			"Type" : "String",
+			"AllowedValues" : [
+				"CSV"
+			],
+			"Default" : "CSV"
+		},
+		"NotificationEmail"  : {
+			"Description" : "The email address notifications will be sent to when processing errors occur.",
+		    "Type"        : "String"
 		}
-
     },
 
 
@@ -56,6 +67,18 @@
 					"Ref" : "CloudTrailPrefix"
 				},
 				""
+			]
+		},
+		"UseSNS" : {
+			"Fn::Not" : [
+				{
+					"Fn::Equals" : [
+						{
+							"Ref" : "NotificationEmail"
+						},
+						""
+					]
+				}
 			]
 		}
     },
@@ -270,6 +293,34 @@
                 ]
             }
         },
+		"LambdaSNSPolicy"      : {
+            "Type" : "AWS::IAM::Policy",
+			"Condition" : "UseSNS",
+            "Properties" : {
+                "PolicyName" : "LambdaSNSPolicy",
+                "PolicyDocument" : {
+                    "Version" : "2012-10-17",
+                    "Statement" : [
+                        {
+                            "Effect" : "Allow",
+                            "Action" : [
+                                "sns:Publish"
+                            ],
+                            "Resource" : [
+                                {
+									"Ref" : "SNSTopic"
+								}
+                            ]
+                        }
+                    ]
+                },
+                "Roles"          : [
+                    {
+                        "Ref" : "LambdaAthenaMetricsRole"
+                    }
+                ]
+            }
+        },
 
 
         "AWSAthenaMetricProvider" : {
@@ -318,7 +369,20 @@
 								"Retry",
 								"Key"
 							]
-						}
+						},
+						"OUTPUT_FORMAT" : {
+							"Ref" : "OutputFormat"
+						},
+						"SNS_TOPIC" : {
+							"Fn::If" : [
+								"UseSNS",
+								{
+									"Ref" : "SNSTopic"
+								},
+								""
+							]
+						},
+						"SEND_SNS" : true
 					}
 				},
                 "Events"       : {
@@ -378,7 +442,20 @@
 								"Retry",
 								"Key"
 							]
-						}
+						},
+						"OUTPUT_FORMAT" : {
+							"Ref" : "OutputFormat"
+						},
+						"SNS_TOPIC" : {
+							"Fn::If" : [
+								"UseSNS",
+								{
+									"Ref" : "SNSTopic"
+								},
+								""
+							]
+						},
+						"SEND_SNS" : true
 					}
 				},
                 "Events"       : {
@@ -784,6 +861,23 @@
                         }
                     ]
                 }
+            }
+        },
+
+		"SNSTopic" : {
+            "Type" : "AWS::SNS::Topic",
+			"Condition" : "UseSNS",
+            "Properties" : {
+                "DisplayName" : "AWSAthenaUserMetricNotifications",
+                "Subscription" : [
+                    {
+                        "Protocol" : "email",
+                        "Endpoint" : {
+                            "Ref" : "NotificationEmail"
+                        }
+                    }
+                ],
+                "TopicName"    : "AWSAthenaUserMetric_Notifications"
             }
         }
     },

@@ -6,10 +6,15 @@ using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Transfer;
+using Amazon.SimpleNotificationService;
+using Amazon.SimpleNotificationService.Model;
 using BAMCIS.AWSLambda.Common;
 using BAMCIS.AWSLambda.Common.Events;
 using CsvHelper;
 using Newtonsoft.Json;
+using Parquet;
+using Parquet.Data;
+using Parquet.Serialization;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,12 +34,17 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
         private static IAmazonS3 _S3Client;
         private static IAmazonAthena _AthenaClient;
+        private static IAmazonSimpleNotificationService _SNSClient;
 
         private static readonly string MARKER_BUCKET = "MARKER_BUCKET";
         private static readonly string MARKER_KEY = "MARKER_KEY";
         private static readonly string RESULT_BUCKET = "RESULT_BUCKET";
         private static readonly string RETRY_BUCKET = "RETRY_BUCKET";
         private static readonly string RETRY_KEY = "RETRY_KEY";
+        private static readonly string OUTPUT_FORMAT = "OUTPUT_FORMAT";
+
+        private static string _SNSTopic;
+        private static readonly string _Subject = "AWS Athena User Metric Failure";
 
         #endregion
 
@@ -49,11 +59,15 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
             _S3Client = new AmazonS3Client(Creds);
             _AthenaClient = new AmazonAthenaClient(Creds);
+            _SNSClient = new AmazonSimpleNotificationServiceClient(Creds);
 #else
 
             _S3Client = new AmazonS3Client();
             _AthenaClient = new AmazonAthenaClient();
+            _SNSClient = new AmazonSimpleNotificationServiceClient();
 #endif
+
+            _SNSTopic = Environment.GetEnvironmentVariable("SNS_TOPIC");
         }
 
         /// <summary>
@@ -96,21 +110,27 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
                     if (BatchResponse == null)
                     {
-                        context.LogError($"The batch response was null, this shouldn't happen.");
+                        string Message = $"The batch response was null, this shouldn't happen.";
+                        context.LogError(Message);
+                        await SNSNotify(Message, context);
                         return;
                     }
 
                     // Make sure we received a good status code
                     if (BatchResponse.HttpStatusCode != HttpStatusCode.OK)
                     {
-                        context.LogError($"The batch request did not return a success status code: {(int)BatchResponse.HttpStatusCode}.");
+                        string Message = $"The batch request did not return a success status code: {(int)BatchResponse.HttpStatusCode}.";
+                        context.LogError(Message);
+                        await SNSNotify(Message, context);
                         return;
                     }
 
                     // Make sure we actually received data back
                     if (BatchResponse.QueryExecutions == null || !BatchResponse.QueryExecutions.Any())
                     {
-                        context.LogError($"The batch response did not contain any query executions.");
+                        string Message = $"The batch response did not contain any query executions.";
+                        context.LogError(Message);
+                        await SNSNotify(Message, context);
                     }
                     else
                     {
@@ -137,7 +157,13 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                         else
                         {
                             Counter += FinishedQueries.Count;
-                            await WriteDataAsync(FinishedQueries, Environment.GetEnvironmentVariable(RESULT_BUCKET), context);
+
+                            await WriteDataAsync(
+                                FinishedQueries, 
+                                Environment.GetEnvironmentVariable(RESULT_BUCKET), 
+                                Environment.GetEnvironmentVariable(OUTPUT_FORMAT), 
+                                context
+                            );
 
                         }
                     }
@@ -177,7 +203,11 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
             // Retrieve the last query execution id that was processed, i.e. the most recent one
             // the last time it ran
-            string LastReadQueryExecutionId = await GetLastQueryExecutionIdAsync(Environment.GetEnvironmentVariable(MARKER_BUCKET), Environment.GetEnvironmentVariable(MARKER_KEY));
+            string LastReadQueryExecutionId = await GetLastQueryExecutionIdAsync(
+                Environment.GetEnvironmentVariable(MARKER_BUCKET), 
+                Environment.GetEnvironmentVariable(MARKER_KEY), 
+                context
+            );
 
             context.LogInfo($"Previous run last processed query execution id: {LastReadQueryExecutionId}.");
 
@@ -202,7 +232,9 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
                 if (ListResponse.HttpStatusCode != HttpStatusCode.OK)
                 {
-                    context.LogError($"The list request did not return a success status code: {(int)ListResponse.HttpStatusCode}.");
+                    string Message = $"The list request did not return a success status code: {(int)ListResponse.HttpStatusCode}.";
+                    context.LogError(Message);
+                    await SNSNotify(Message, context);
                     return;
                 }
 
@@ -249,21 +281,28 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
                     if (BatchResponse == null)
                     {
-                        context.LogError($"The batch response was null, this shouldn't happen.");
+                        string Message = $"The batch response was null, this shouldn't happen.";
+                        context.LogError(Message);
+                        await SNSNotify(Message, context);
                         return;
                     }
 
                     // Make sure we received a good status code
                     if (BatchResponse.HttpStatusCode != HttpStatusCode.OK)
                     {
-                        context.LogError($"The batch request did not return a success status code: {(int)BatchResponse.HttpStatusCode}.");
+                        string Message = $"The batch request did not return a success status code: {(int)BatchResponse.HttpStatusCode}.";
+                        context.LogError(Message);
+                        await SNSNotify(Message, context);
                         return;
                     }
 
                     // Make sure we actually received data back
                     if (BatchResponse.QueryExecutions == null || !BatchResponse.QueryExecutions.Any())
                     {
-                        context.LogError($"The batch response did not contain any query executions.");
+                        string Message = $"The batch response did not contain any query executions.";
+                        context.LogError(Message);
+                        await SNSNotify(Message, context);
+
                     }
                     else
                     {
@@ -290,7 +329,9 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
                             if (Response.HttpStatusCode != HttpStatusCode.OK)
                             {
-                                context.LogError($"Failed to upload retry file with status code: {(int)Response.HttpStatusCode}. Request Id: {Response.ResponseMetadata.RequestId}.");
+                                string Message = $"Failed to upload retry file with status code: {(int)Response.HttpStatusCode}. Request Id: {Response.ResponseMetadata.RequestId}.";
+                                context.LogError(Message);
+                                await SNSNotify(Message, context);
                             }
                         }
 
@@ -305,7 +346,7 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                         Counter += FinishedQueries.Count;
 
                         // Write the finished query data to S3
-                        await WriteDataAsync(FinishedQueries, Environment.GetEnvironmentVariable(RESULT_BUCKET), context);
+                        await WriteDataAsync(FinishedQueries, Environment.GetEnvironmentVariable(RESULT_BUCKET), Environment.GetEnvironmentVariable(OUTPUT_FORMAT), context);
                     }
                 }
 
@@ -326,7 +367,13 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
             // response, of if the new is the same as the old, meaning we didn't process any new queries
             if (!String.IsNullOrEmpty(NewLastQueryExecutionId) && NewLastQueryExecutionId != LastReadQueryExecutionId)
             {
-                await SetLastQueryExecutionIdAsync(Environment.GetEnvironmentVariable(MARKER_BUCKET), Environment.GetEnvironmentVariable(MARKER_KEY), NewLastQueryExecutionId);
+                await SetLastQueryExecutionIdAsync(
+                    Environment.GetEnvironmentVariable(MARKER_BUCKET), 
+                    Environment.GetEnvironmentVariable(MARKER_KEY), 
+                    NewLastQueryExecutionId, 
+                    context
+                )
+                ;
                 context.LogInfo($"Completed updating marker to {NewLastQueryExecutionId}.");
             }
             else
@@ -347,7 +394,7 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
         /// <param name="bucket"></param>
         /// <param name="key"></param>
         /// <returns></returns>
-        private static async Task<string> GetLastQueryExecutionIdAsync(string bucket, string key)
+        private static async Task<string> GetLastQueryExecutionIdAsync(string bucket, string key, ILambdaContext context)
         {
             string LastQueryExecutionId = String.Empty;
 
@@ -361,9 +408,9 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception e)
             {
-
+                context.LogError(e);
             }
 
             return LastQueryExecutionId;
@@ -376,17 +423,26 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
         /// <param name="key"></param>
         /// <param name="queryExecutionId"></param>
         /// <returns></returns>
-        private static async Task SetLastQueryExecutionIdAsync(string bucket, string key, string queryExecutionId)
+        private static async Task SetLastQueryExecutionIdAsync(string bucket, string key, string queryExecutionId, ILambdaContext context)
         {
-            PutObjectRequest Request = new PutObjectRequest()
+            try
             {
-                BucketName = bucket,
-                Key = key,
-                ContentType = "text/plain",
-                ContentBody = queryExecutionId
-            };
+                PutObjectRequest Request = new PutObjectRequest()
+                {
+                    BucketName = bucket,
+                    Key = key,
+                    ContentType = "text/plain",
+                    ContentBody = queryExecutionId
+                };
 
-            await _S3Client.PutObjectAsync(Request);
+                await _S3Client.PutObjectAsync(Request);
+            }
+            catch (Exception e)
+            {
+                string Message = $"Failed to upload last query execution marker {queryExecutionId} to s3://${bucket}/${key}.";
+                context.LogError(Message, e);
+                await SNSNotify(e, Message, context);
+            }
         }
 
         /// <summary>
@@ -420,15 +476,25 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
         /// <returns></returns>
         private static async Task<PutObjectResponse> SetRetryFileAsync(string bucket, string key, List<string> ids, ILambdaContext context)
         {
-            PutObjectRequest PutRequest = new PutObjectRequest()
+            try
             {
-                BucketName = Environment.GetEnvironmentVariable(RETRY_BUCKET),
-                Key = Environment.GetEnvironmentVariable(RETRY_KEY),
-                ContentBody = String.Join("\n", ids),
-                ContentType = "text/plain"
-            };
+                PutObjectRequest PutRequest = new PutObjectRequest()
+                {
+                    BucketName = Environment.GetEnvironmentVariable(RETRY_BUCKET),
+                    Key = Environment.GetEnvironmentVariable(RETRY_KEY),
+                    ContentBody = String.Join("\n", ids),
+                    ContentType = "text/plain"
+                };
 
-            return await _S3Client.PutObjectAsync(PutRequest);
+                return await _S3Client.PutObjectAsync(PutRequest);
+            }
+            catch (Exception e)
+            {
+                string Message = $"Failed to set the retry file at s3://${bucket}/${key}.";
+                context.LogError(Message, e);
+                await SNSNotify(e, Message, context);
+                return null;
+            }
         }
 
         /// <summary>
@@ -514,8 +580,22 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
         /// <param name="finishedQueries"></param>
         /// <param name="context"></param>
         /// <returns></returns>
-        private static async Task WriteDataAsync(IEnumerable<AthenaQueryMetric> finishedQueries, string bucket, ILambdaContext context)
+        private static async Task WriteDataAsync(IEnumerable<AthenaQueryMetric> finishedQueries, string bucket, string format, ILambdaContext context)
         {
+            if (finishedQueries == null)
+            {
+                throw new ArgumentNullException("finishedQueries");
+            }
+
+            if (String.IsNullOrEmpty(bucket))
+            {
+                throw new ArgumentNullException("bucket");
+            }
+
+            if (context == null)
+            {
+                throw new ArgumentNullException("context");
+            }
 
             foreach (IGrouping<string, AthenaQueryMetric> Group in finishedQueries.GroupBy(x => x.BillingPeriod))
             {
@@ -525,46 +605,57 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                 // transfer utility has finished the upload
                 List<IDisposable> Disposables = new List<IDisposable>();
 
-
+                // The memory stream the compressed stream will be written into
+                MemoryStream MStreamOut = new MemoryStream();
+                Disposables.Add(MStreamOut);
 
                 try
                 {
-                    // The memory stream the compressed stream will be written into
-                    MemoryStream MStreamOut = new MemoryStream();
-
-                    // The Gzip Stream only writes its file footer 10 byte data when the stream is closed
-                    // Calling dispose via the using block flushes and closes the stream first causing the 
-                    // the footer data to be written out to the memory stream. The third parameter "true"
-                    // allows the memorystream to still access the gzip stream data, otherwise when trying to
-                    // upload the stream via the transfer utility, it will cause an exception that the stream
-                    // is closed
-                    using (GZipStream Gzip = new GZipStream(MStreamOut, CompressionLevel.Optimal, true))
+                    switch (format)
                     {
-                        TextWriter TWriter = new StreamWriter(Gzip);
-                        CsvWriter Writer = new CsvWriter(TWriter);
+                        default:
+                        case "csv":
+                            {
+                                // The Gzip Stream only writes its file footer 10 byte data when the stream is closed
+                                // Calling dispose via the using block flushes and closes the stream first causing the 
+                                // the footer data to be written out to the memory stream. The third parameter "true"
+                                // allows the memorystream to still access the gzip stream data, otherwise when trying to
+                                // upload the stream via the transfer utility, it will cause an exception that the stream
+                                // is closed
+                                using (GZipStream Gzip = new GZipStream(MStreamOut, CompressionLevel.Optimal, true))
+                                {
+                                    TextWriter TWriter = new StreamWriter(Gzip);
+                                    CsvWriter Writer = new CsvWriter(TWriter);
 
-                        Writer.Configuration.RegisterClassMap<AthenaQueryMetricCsvMapping>();
+                                    Writer.Configuration.RegisterClassMap<AthenaQueryMetricCsvMapping>();
 
-                        Disposables.Add(Writer);
-                        Disposables.Add(TWriter);
-                        Disposables.Add(MStreamOut);
+                                    Disposables.Add(Writer);
+                                    Disposables.Add(TWriter);
 
-                        Writer.WriteHeader<AthenaQueryMetric>();
-                        Writer.NextRecord(); // Advance the writer to the next line before
-                                             // writing the records
-                        Writer.WriteRecords<AthenaQueryMetric>(finishedQueries);
+                                    Writer.WriteHeader<AthenaQueryMetric>();
+                                    Writer.NextRecord(); // Advance the writer to the next line before
+                                                         // writing the records
+                                    Writer.WriteRecords<AthenaQueryMetric>(finishedQueries);
 
-                        // Make sure to flush all of the data to the stream
-                        Writer.Flush();
-                        TWriter.Flush();
+                                    // Make sure to flush all of the data to the stream
+                                    Writer.Flush();
+                                    TWriter.Flush();
+                                }
+
+                                break;
+                            }
+                        case "parquet":
+                            {
+
+                                
+                                Schema PSchema = SchemaReflector.Reflect<AthenaQueryMetric>();
+
+                                //ParquetConvert.Serialize<AthenaQueryMetric>(finishedQueries, MStreamOut, PSchema);
+                                
+
+                                break;
+                            }
                     }
-
-
-                    /*
-                    Schema PSchema = SchemaReflector.Reflect<AthenaQueryMetric>();
-
-                    ParquetConvert.Serialize<AthenaQueryMetric>(FinishedQueries, MStreamOut, PSchema);
-                    */
 
                     // Make the transfer utility request to post the query data csv content
                     TransferUtilityUploadRequest Request = new TransferUtilityUploadRequest()
@@ -581,20 +672,23 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                     {
                         try
                         {
-                            context.LogInfo($"Starting file upload of {MStreamOut.Length} bytes: ${Request.Key}.");
+                            context.LogInfo($"Starting file upload of {MStreamOut.Length} bytes: {Request.Key}.");
                             // Make the upload 
                             await XferUtil.UploadAsync(Request);
                             context.LogInfo($"Finished upload of {Request.Key}.");
                         }
                         catch (Exception e)
                         {
-                            context.LogError(e);
+                            string Message = $"Failed to upload data file to s3://{Request.BucketName}/{Request.Key}.";
+                            context.LogError(Message, e);
+                            await SNSNotify(e, Message, context);
                         }
                     }
                 }
                 catch (Exception e)
                 {
                     context.LogError(e);
+                    await SNSNotify(e, context);
                 }
                 finally
                 {
@@ -617,6 +711,63 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                     GC.WaitForPendingFinalizers();
                 }
             }
+        }
+
+        /// <summary>
+        /// If configured, sends an SNS notification to a topic
+        /// </summary>
+        /// <param name="message"></param>
+        /// <param name="context"></param>
+        /// <returns></returns>
+        private static async Task SNSNotify(string message, ILambdaContext context)
+        {
+            string SendSNS = Environment.GetEnvironmentVariable("SEND_SNS");
+            bool Send = false;
+
+            if (!String.IsNullOrEmpty(SendSNS))
+            {
+                Boolean.TryParse(SendSNS, out Send);
+            }
+
+            if (!String.IsNullOrEmpty(_SNSTopic) && Send)
+            {
+                try
+                {
+                    PublishResponse Response = await _SNSClient.PublishAsync(_SNSTopic, message, _Subject);
+
+                    if (Response.HttpStatusCode != HttpStatusCode.OK)
+                    {
+                        context.LogError($"Failed to send SNS notification with status code {(int)Response.HttpStatusCode}.");
+                    }
+                }
+                catch (Exception e)
+                {
+                    context.LogError("Failed to send SNS notification.", e);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Notify with exception
+        /// </summary>
+        /// <param name="e"></param>
+        /// <param name="context"></param>
+        /// <returns></returns>
+        private static async Task SNSNotify(Exception e, ILambdaContext context)
+        {
+            await SNSNotify($"EXCEPTION: {e.GetType().FullName}\nMESSAGE: {e.Message}\nSTACKTRACE: {e.StackTrace}", context);
+        }
+
+        /// <summary>
+        /// Notify with exception and message
+        /// </summary>
+        /// <param name="e"></param>
+        /// <param name="message"></param>
+        /// <param name="context"></param>
+        /// <returns></returns>
+        private static async Task SNSNotify(Exception e, string message, ILambdaContext context)
+        {
+            await SNSNotify($"{message}\nEXCEPTION: {e.GetType().FullName}\nMESSAGE: {e.Message}\nSTACKTRACE: {e.StackTrace}", context);
         }
 
         #endregion
