@@ -135,7 +135,7 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                     else
                     {
                         // These are all the transformed records
-                        IEnumerable<AthenaQueryMetric> Records = BatchResponse.QueryExecutions.Select(x => new AthenaQueryMetric(x));
+                        IEnumerable<AthenaQueryMetric> Records = BatchResponse.QueryExecutions.Select(x => AthenaQueryMetric.Build(x));
 
                         // These are the queries that either succeeded or were cancelled and are done
                         List<AthenaQueryMetric> FinishedQueries = Records.Where(x => x.Status == QueryExecutionState.SUCCEEDED.Value || x.Status == QueryExecutionState.CANCELLED.Value).ToList();
@@ -307,7 +307,7 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                     else
                     {
                         // These are all the transformed records
-                        IEnumerable<AthenaQueryMetric> Records = BatchResponse.QueryExecutions.Select(x => new AthenaQueryMetric(x));
+                        IEnumerable<AthenaQueryMetric> Records = BatchResponse.QueryExecutions.Select(x => AthenaQueryMetric.Build(x));
 
                         // These are the queries that either succeeded or were cancelled and are done
                         List<AthenaQueryMetric> FinishedQueries = Records.Where(x => x.Status == QueryExecutionState.SUCCEEDED.Value || x.Status == QueryExecutionState.CANCELLED.Value).ToList();
