@@ -196,6 +196,8 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
             this.OutputLocation = outputLocation;
             this.EncryptionConfiguration = encryptionConfiguration;
             this.KmsKey = kmsKey;
+
+            this.BillingPeriod = this.SubmissionDate.ToString("yyyy-MM-01");
         }
 
         #endregion
