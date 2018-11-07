@@ -269,7 +269,8 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                 // we've gotten back to the start of the last run
                 if (ListResponse.QueryExecutionIds.Any(x => x.Equals(LastReadQueryExecutionId)))
                 {
-                    BatchRequest.QueryExecutionIds = BatchRequest.QueryExecutionIds.Where(x => !x.Equals(LastReadQueryExecutionId)).ToList();
+                    // Take everything until we reach the last read id
+                    BatchRequest.QueryExecutionIds = BatchRequest.QueryExecutionIds.TakeWhile(x => !x.Equals(LastReadQueryExecutionId)).ToList();
                     Finished = true;
                 }
 
