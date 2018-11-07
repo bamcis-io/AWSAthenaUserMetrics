@@ -93,9 +93,11 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
 
             List<string> RetryIds = await GetRetryFileAsync(Environment.GetEnvironmentVariable(RETRY_BUCKET), Environment.GetEnvironmentVariable(RETRY_KEY), context);
 
+            context.LogInfo($"Found {RetryIds.Count} ids to retry.");
+
             List<string> RemainingIds = new List<string>();
 
-            if (RetryIds != null && RetryIds.Any())
+            if (RetryIds != null && RetryIds.Any() && !RetryIds.All(x => String.IsNullOrEmpty(x)))
             {
                 int Counter = 0;
 
@@ -521,7 +523,10 @@ namespace BAMCIS.LambdaFunctions.AWSAthenaUserMetrics
                 {
                     using (StreamReader Reader = new StreamReader(ResponseStream))
                     {
-                        return Reader.ReadToEnd().Split("\n").Select(x => x.Trim()).ToList();
+                        if (ResponseStream.Length > 0)
+                        {
+                            return Reader.ReadToEnd().Split("\n").Select(x => x.Trim()).Where(x => !String.IsNullOrEmpty(x)).ToList();
+                        }
                     }
                 }
             }
